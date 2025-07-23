@@ -62,14 +62,19 @@ import seaborn as sns
 import argparse
 
 # =============================================================================
-# A. CONFIGURATION & DATA HANDLING
+# A. GLOBAL CONFIGURATION 
 # =============================================================================
 sns.set_theme(style="whitegrid", context="paper", font_scale=1.1)
 COLORS = ["#004488", "#DDAA33", "#BB5566", "#FF5733"]
 ABLATION_DIR = Path("Ablation_Studies_Report")
 
+# =============================================================================
+# B: DATA LOADING & DEFAULTS CALCULATION
+# =============================================================================
+
 def load_ablation_data(scene_csv: str, behavior_csv: Optional[str] = None) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     """Loads and prepares the scene and behavior data for the ablation study."""
+
     print("Loading data for ablation studies...")
     if not os.path.exists(scene_csv):
         raise FileNotFoundError(f"Scene data CSV not found at: {scene_csv}")
@@ -91,6 +96,7 @@ def calculate_default_metrics(scene_df: pd.DataFrame, behavior_df: Optional[pd.D
     Calculates average inference time and GFLOPs from the raw data. These values
     are used as fallbacks for any adapters where performance metrics are missing.
     """
+
     print("\nCalculating data-driven default values for performance metrics...")
 
     BEHAVIOR_ADAPTERS = ["ACTION", "LOOK", "CROSS", "OCCLUSION"]
@@ -126,7 +132,7 @@ def calculate_default_metrics(scene_df: pd.DataFrame, behavior_df: Optional[pd.D
     return defaults
 
 # =============================================================================
-# B. PERFORMANCE SIMULATION
+# C: PERFORMANCE SIMULATION
 # =============================================================================
 
 def simulate_approach_performance(scene_df: pd.DataFrame, mode: str, defaults: Dict) -> Dict:
@@ -141,6 +147,7 @@ def simulate_approach_performance(scene_df: pd.DataFrame, mode: str, defaults: D
     Returns:
         A dictionary of aggregated performance metrics for the specified mode.
     """
+
     BEHAVIOR_ADAPTERS = ["ACTION", "LOOK", "CROSS", "OCCLUSION"]
     SCENE_ADAPTERS = ["WEATHER", "TIME_OF_DAY", "PED_DENSITY", "ROAD_PRESENCE"]
     ALL_ADAPTERS = BEHAVIOR_ADAPTERS + SCENE_ADAPTERS
@@ -150,6 +157,7 @@ def simulate_approach_performance(scene_df: pd.DataFrame, mode: str, defaults: D
 
     adapter_usage = {a: 0 for a in ALL_ADAPTERS}
     total_frames = len(scene_df)
+    total_adapters_fired = 0
     per_frame_times = np.zeros(total_frames)
     per_frame_gflops = np.zeros(total_frames)
     per_frame_adapters = np.zeros(total_frames)
@@ -162,57 +170,71 @@ def simulate_approach_performance(scene_df: pd.DataFrame, mode: str, defaults: D
         col = adapter_gflops_cols.get(adapter, "")
         return row.get(col, defaults['gflops'])
 
-    video_context = {}
+    last_video_id = None
+    last_ped_density_result = None
+    video_ped_density_result = {}
 
-    for i, row in scene_df.iterrows():
-        video_id = row["video_id"]
-        frame_id = row["frame_id"]
+    for i, (_, row) in enumerate(scene_df.iterrows()):
+        video_id = row.get("video_id")
+        frame_id = row.get("frame_id")
+        is_first_frame = (video_id != last_video_id)
+        if is_first_frame:
+            last_ped_density_result = None
+            video_ped_density_result[video_id] = None
+        last_video_id = video_id
 
-        if video_id not in video_context:
-            video_context[video_id] = {'last_ped_density': None, 'is_first_frame': True}
-        
-        is_first_frame = video_context[video_id].get('is_first_frame', True)
         adapters_fired_this_frame = []
         
+        # --- ALL mode ---
         if mode == "all":
+            # Fire all BEHAVIOR_ADAPTERS every frame
             adapters_fired_this_frame = BEHAVIOR_ADAPTERS.copy()
+            # Fire all SCENE_ADAPTERS every 30th frame
             if frame_id % 30 == 0:
-                adapters_fired_this_frame.extend(SCENE_ADAPTERS)
+                adapters_fired_this_frame += SCENE_ADAPTERS
         
-        else: # ADAPTIVE mode
+        # --- ADAPTIVE mode ---
+        else:
+            # 1. WEATHER and TIME_OF_DAY only on first frame
             if is_first_frame:
-                adapters_fired_this_frame.extend(["WEATHER", "TIME_OF_DAY"])
-                video_context[video_id]['is_first_frame'] = False
-            
+                adapters_fired_this_frame += ["WEATHER", "TIME_OF_DAY"]
+            # 2. PED_DENSITY every 30th frame
             if frame_id % 30 == 0:
                 adapters_fired_this_frame.append("PED_DENSITY")
-                video_context[video_id]['last_ped_density'] = row.get("pred_ped_density", "low_pedestrian_density")
-            
-            last_ped_density = video_context[video_id].get('last_ped_density', "low_pedestrian_density")
-            weather = row.get("pred_weather", "sunny").lower()
-            time_of_day = row.get("pred_time_of_day", "day").lower()
-            
-            if (time_of_day == "night" or weather in ["rainy", "snowy"] or last_ped_density == "low_pedestrian_density"):
-                adapters_fired_this_frame.extend(["ACTION", "LOOK", "CROSS", "OCCLUSION"])
-            elif last_ped_density == "medium_pedestrian_density":
-                adapters_fired_this_frame.extend(["ACTION", "LOOK", "CROSS", "ROAD_PRESENCE"])
-            elif last_ped_density == "high_pedestrian_density" and not (time_of_day == "night" or weather in ["rainy", "snowy"]):
-                adapters_fired_this_frame.append("ROAD_PRESENCE")
+                ped_density_result = row.get("pred_ped_density", "unknown")
+                last_ped_density_result = ped_density_result
+                video_ped_density_result[video_id] = ped_density_result
+            else:
+                ped_density_result = video_ped_density_result.get(video_id, None)
+            # 3. Get scene context
+            weather = row.get("pred_weather", "unknown").lower()
+            time_of_day = row.get("pred_time_of_day", "unknown").lower()
+            # 4. Adapter firing logic
+            if (time_of_day == "night" or weather in ["rainy", "snowy"] or (last_ped_density_result == "low_pedestrian_density")):
+                adapters_fired_this_frame += ["ACTION", "LOOK", "CROSS", "OCCLUSION"]
+            elif last_ped_density_result == "medium_pedestrian_density":
+                adapters_fired_this_frame += ["ACTION", "LOOK", "CROSS", "ROAD_PRESENCE"]
+            elif last_ped_density_result == "high_pedestrian_density" and not (time_of_day == "night" or weather in ["rainy", "snowy"]):
+                adapters_fired_this_frame += ["ROAD_PRESENCE"]
+            # else: no additional adapters
 
         adapters_fired_this_frame = list(set(adapters_fired_this_frame))
-        per_frame_times[i] = sum(get_adapter_time(row, a) for a in adapters_fired_this_frame)
-        per_frame_gflops[i] = sum(get_adapter_gflops(row, a) for a in adapters_fired_this_frame)
-        per_frame_adapters[i] = len(adapters_fired_this_frame)
-        
+        frame_time = sum(get_adapter_time(row, a) for a in adapters_fired_this_frame)
+        frame_gflops = sum(get_adapter_gflops(row, a) for a in adapters_fired_this_frame)
+
+        total_adapters_fired += len(adapters_fired_this_frame)
         for adapter in adapters_fired_this_frame:
             adapter_usage[adapter] += 1
-            
-    total_adapters_fired = np.sum(per_frame_adapters)
-    
+        
+        per_frame_times[i] = frame_time
+        per_frame_gflops[i] = frame_gflops
+        per_frame_adapters[i] = len(adapters_fired_this_frame)
+
+    avg_fps = 1000 / np.mean(per_frame_times) if np.mean(per_frame_times) > 0 else 0
     return {
         "mode": mode.upper(),
         "avg_inference_time_ms": np.mean(per_frame_times),
-        "avg_fps": 1000 / np.mean(per_frame_times) if np.mean(per_frame_times) > 0 else 0,
+        "avg_fps": avg_fps,
         "avg_gflops": np.mean(per_frame_gflops),
         "avg_adapters_fired_per_frame": np.mean(per_frame_adapters),
         "total_adapters_fired": total_adapters_fired,
@@ -221,49 +243,87 @@ def simulate_approach_performance(scene_df: pd.DataFrame, mode: str, defaults: D
     }
 
 # =============================================================================
-# C. VISUALIZATION & REPORTING
+# D: VISUALIZATION & REPORTING
 # =============================================================================
 
 def plot_ablation_results(all_metrics: Dict, adaptive_metrics: Dict):
     """Creates and saves a grouped bar plot comparing key performance metrics."""
+
+    import numpy as np
     import matplotlib.colors as mcolors
 
     metrics = [
-        ("Avg Inference Time (ms)", "avg_inference_time_ms", "lower"),
-        ("Avg FPS", "avg_fps", "higher"),
-        ("Avg GFLOPs", "avg_gflops", "lower"),
-        ("Avg Adapters Fired / Frame", "avg_adapters_fired_per_frame", "lower"),
+        ("Avg Inference Time (ms)", "avg_inference_time_ms"),
+        ("Avg FPS", "avg_fps"),
+        ("Avg GFLOPs", "avg_gflops"),
+        ("Avg Adapters Fired / Frame", "avg_adapters_fired_per_frame"),
     ]
-    all_vals = [all_metrics[k] for _, k, _ in metrics]
-    adaptive_vals = [adaptive_metrics[k] for _, k, _ in metrics]
-    
-    fig, ax = plt.subplots(figsize=(12, 7))
-    x = np.arange(len(metrics))
-    width = 0.35
+    all_vals = [all_metrics[k] for _, k in metrics]
+    adaptive_vals = [adaptive_metrics[k] for _, k in metrics]
+    percent_change = [
+        100 * (adaptive - all_val) / all_val if all_val != 0 else 0
+        for all_val, adaptive in zip(all_vals, adaptive_vals)
+    ]
 
-    bars1 = ax.bar(x - width/2, all_vals, width, label='ALL (Baseline)', color=COLORS[0])
-    bars2 = ax.bar(x + width/2, adaptive_vals, width, label='ADAPTIVE', color=COLORS[1])
+    base_colors = COLORS[:len(metrics)]
+    def lighten(color, amount=0.5):
+        c = np.array(mcolors.to_rgb(color))
+        white = np.array([1, 1, 1])
+        return tuple(c + (white - c) * amount)
+    light_colors = [lighten(c, 0.5) for c in base_colors]
 
-    for i, (name, key, pref) in enumerate(metrics):
-        all_val = all_metrics[key]
-        adaptive_val = adaptive_metrics[key]
-        
-        change = ((adaptive_val - all_val) / all_val) * 100 if all_val != 0 else float('inf')
-        is_good = (change < 0 and pref == 'lower') or (change > 0 and pref == 'higher')
-        color = 'green' if is_good else 'red'
-        
-        ax.text(bars2[i].get_x() + bars2[i].get_width() / 2, bars2[i].get_height() * 1.01,
-                f'{change:+.1f}%', ha='center', va='bottom', fontsize=10, color=color, fontweight='bold')
+    x = np.arange(len(metrics)) * 0.7  
+    width = 0.18  
+    offset = width / 2.5  
 
-        ax.bar_label(bars1, fmt='%.2f', padding=3, fontsize=10, fontweight='bold')
-        ax.bar_label(bars2, fmt='%.2f', padding=3, fontsize=10, fontweight='bold')
-        
+    xlabels = []
+    for i, (name, _) in enumerate(metrics):
+        pct = percent_change[i]
+        sign = "+" if pct >= 0 else ""
+        color = "green" if pct >= 0 else "red"
+        pct_str = f"{{\\color{{{color}}}{sign}{pct:.1f}\\%}}"
+        xlabels.append(f"{name}\n" + r"$\mathdefault{" + f"{sign}{pct:.1f}\\%" + r"}$")
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    bars1 = []
+    bars2 = []
+    for i in range(len(metrics)):
+        b1 = ax.bar(x[i] - offset, all_vals[i], width, color=base_colors[i], label=f"{metrics[i][0]} (ALL)" if i == 0 else "")
+        b2 = ax.bar(x[i] + offset, adaptive_vals[i], width, color=light_colors[i], label=f"{metrics[i][0]} (ADAPTIVE)" if i == 0 else "")
+        bars1.append(b1)
+        bars2.append(b2)
+
+    for i, b1 in enumerate(bars1):
+        height = b1[0].get_height()
+        ax.annotate(f'{height:.2f}',
+                    xy=(b1[0].get_x() + b1[0].get_width() / 2, height),
+                    xytext=(0, 5), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=11, fontweight='bold', color=base_colors[i])
+    for i, b2 in enumerate(bars2):
+        height = b2[0].get_height()
+        ax.annotate(f'{height:.2f}',
+                    xy=(b2[0].get_x() + b2[0].get_width() / 2, height),
+                    xytext=(0, 5), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=11, fontweight='bold', color=base_colors[i])
+
     ax.set_ylabel('Value', fontsize=13)
     ax.set_xticks(x)
-    ax.set_xticklabels([m[0] for m in metrics], fontsize=12)
-    ax.set_title('Ablation Study: ALL (Baseline) vs. ADAPTIVE Approach Performance', fontsize=16, fontweight='bold')
-    ax.legend(fontsize=12)
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    for label, pct in zip(ax.set_xticklabels(xlabels, fontsize=12, rotation=35, ha='right'), percent_change):
+        sign = "+" if pct >= 0 else ""
+        color = "green" if pct >= 0 else "red"
+        label.set_color('black')
+        label.set_fontweight('bold')
+
+    ax.set_title('Ablation Study: ALL vs. ADAPTIVE (All Metrics)', fontsize=15, fontweight='bold')
+
+    from matplotlib.patches import Patch
+    legend_patches = [
+        Patch(facecolor=base_colors[0], label='ALL'),
+        Patch(facecolor=light_colors[0], label='ADAPTIVE')
+    ]
+    ax.legend(handles=legend_patches, fontsize=12)
+    ax.grid(axis='y', alpha=0.3)
     fig.tight_layout()
     
     plt.savefig(ABLATION_DIR / "adaptive_vs_all_ablation.png", dpi=300)
@@ -273,33 +333,31 @@ def plot_ablation_results(all_metrics: Dict, adaptive_metrics: Dict):
 def save_ablation_report(all_metrics: Dict, adaptive_metrics: Dict):
     """Saves a detailed markdown report comparing the two operational modes."""
     with open(ABLATION_DIR / "ablation_report.md", "w") as f:
-        f.write("# Ablation Study: ALL (Baseline) vs. ADAPTIVE Approach Performance\n\n")
-        f.write("This report compares the performance of the analysis approach when firing all adapters periodically versus using an adaptive, rule-based strategy.\n\n")
-        
-        f.write("## Performance Summary\n\n")
-        f.write("| Metric | ALL (Baseline) | ADAPTIVE | Change |\n")
+        f.write("# Ablation Study: Adaptive vs. All Adapters\n\n")
+        f.write("This report compares the performance of the system when firing all adapters on every frame versus using an adaptive, rule-based approach.\n\n")
+        f.write("| Metric | ALL Mode | ADAPTIVE Mode | Change |\n")
         f.write("|---|---|---|---|\n")
-
-        def format_row(metric, key, higher_is_better, unit=""):
+        def format_row(metric, key, higher_is_better=True, unit=""):
             all_val = all_metrics[key]
             adaptive_val = adaptive_metrics[key]
-            change = ((adaptive_val - all_val) / all_val) * 100 if all_val != 0 else float('inf')
-            is_good = (change > 0 and higher_is_better) or (change < 0 and not higher_is_better)
-            emoji = "✅" if is_good else "❌"
-            return f"| **{metric}** | `{all_val:.2f}{unit}` | `{adaptive_val:.2f}{unit}` | `{change:+.1f}%` {emoji} |\n"
-        
-        f.write(format_row("Avg Inference Time", "avg_inference_time_ms", False, " ms"))
-        f.write(format_row("Avg Processing FPS", "avg_fps", True))
-        f.write(format_row("Avg GFLOPs", "avg_gflops", False))
-        f.write(format_row("Avg Adapters Fired", "avg_adapters_fired_per_frame", False))
-        
-        f.write("\n### Adapter Utilization (% of total frames each adapter was fired)\n\n")
-        f.write("| Adapter | ALL (Baseline) | ADAPTIVE |\n")
+            if all_val == 0:
+                change = float('inf') if adaptive_val > 0 else 0
+            else:
+                change = ((adaptive_val - all_val) / all_val) * 100
+            emoji = "✅" if (change > 0 and higher_is_better) or (change < 0 and not higher_is_better) else "❌"
+            return f"| **{metric}** | {all_val:.2f}{unit} | {adaptive_val:.2f}{unit} | {change:+.1f}% {emoji} |\n"
+        f.write(format_row("Avg Inference Time", "avg_inference_time_ms", higher_is_better=False, unit=" ms"))
+        f.write(format_row("Avg FPS", "avg_fps", higher_is_better=True))
+        f.write(format_row("Avg GFLOPs", "avg_gflops", higher_is_better=False))
+        f.write(format_row("Avg Adapters Fired", "avg_adapters_fired_per_frame", higher_is_better=False))
+        f.write(format_row("Avg Time / Active Adapter", "avg_time_per_active_adapter", higher_is_better=False, unit=" ms"))
+        f.write("\n### Adapter Utilization (% of frames)\n\n")
+        f.write("| Adapter | ALL Mode | ADAPTIVE Mode |\n")
         f.write("|---|---|---|\n")
-        for adapter in sorted(all_metrics["adapter_utilization"].keys()):
+        for adapter in all_metrics["adapter_utilization"]:
             all_util = all_metrics["adapter_utilization"][adapter] * 100
             adaptive_util = adaptive_metrics["adapter_utilization"][adapter] * 100
-            f.write(f"| {adapter} | `{all_util:.1f}%` | `{adaptive_util:.1f}%` |\n")
+            f.write(f"| {adapter} | {all_util:.1f}% | {adaptive_util:.1f}% |\n")
             
     print(f"Markdown report saved to '{ABLATION_DIR / 'ablation_report.md'}'")
 
