@@ -1294,47 +1294,6 @@ def computational_efficiency_analysis(df: pd.DataFrame):
                 p = np.poly1d(z)
                 ax3.plot(batch_df['Frames'], p(batch_df['Frames']), "r--", alpha=0.8)
     
-    # =========================================================================
-    # PLOT 4: Real-time Performance Viability Matrix
-    # =========================================================================
-    
-    if 'frame_processing_time_ms' in df.columns:
-        performance_targets = {
-            'Real-time (30fps)': 33.33,
-            'High Perf (60fps)': 16.67,
-            'Ultra Perf (120fps)': 8.33
-        }
-        
-        viability_matrix = []
-        
-        if 'pred_weather' in df.columns and 'pred_time_of_day' in df.columns:
-            condition_groups = df.groupby(['pred_weather', 'pred_time_of_day'])
-            
-            for (weather, time_of_day), group in condition_groups:
-                if len(group) < 10:
-                    continue
-                    
-                condition_name = f"{weather}_{time_of_day}".replace('_', ' ').title()
-                processing_times = group['frame_processing_time_ms'].values
-                
-                viability_scores = []
-                for target_name, target_ms in performance_targets.items():
-                    viable_pct = (processing_times <= target_ms).mean() * 100
-                    viability_scores.append(viable_pct)
-                
-                viability_matrix.append([condition_name] + viability_scores)
-        
-        if viability_matrix:
-            viability_df = pd.DataFrame(viability_matrix, 
-                                       columns=['Condition'] + list(performance_targets.keys()))
-            viability_df = viability_df.set_index('Condition')
-            
-            sns.heatmap(viability_df, annot=True, fmt='.1f', cmap='RdYlGn', ax=ax4,
-                       cbar_kws={'label': 'Viability (%)'})
-            ax4.set_title('D) Real-time Performance Viability Matrix')
-            ax4.set_xlabel('Performance Target')
-            ax4.set_ylabel('Environmental Condition')
-    
     plt.tight_layout()
     plt.savefig(PLOTS_DIR / "06_computational_efficiency_matrix.png", dpi=300, bbox_inches='tight')
     plt.close()

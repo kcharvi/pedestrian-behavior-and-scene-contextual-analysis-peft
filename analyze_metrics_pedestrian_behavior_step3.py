@@ -404,7 +404,7 @@ def advanced_adapter_analysis(df: pd.DataFrame):
         # =====================================================================
         # 3. SCALABILITY METRICS
         # =====================================================================
-        f.write("## 3. Scalability Analysis\n\n")
+        f.write("\n## 3. Scalability Analysis\n\n")
         
         f.write("### Batch Processing Efficiency\n\n")
         
@@ -476,7 +476,7 @@ def advanced_adapter_analysis(df: pd.DataFrame):
         # =====================================================================
         # 4. RECOMMENDATIONS
         # =====================================================================
-        f.write("## 4. Recommendations\n\n")
+        f.write("\n## 4. Recommendations\n\n")
         if comparison_data:
             best_performer = max(comparison_data, key=lambda x: x['accuracy'])
             most_efficient = max(comparison_data, key=lambda x: x['efficiency'])
