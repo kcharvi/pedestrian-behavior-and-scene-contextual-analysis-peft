@@ -546,7 +546,7 @@ def plot_latency_and_scalability(df: pd.DataFrame):
     plt.savefig(PLOTS_DIR / "plot_latency_distribution_enhanced.png", dpi=300, bbox_inches='tight')
     plt.close()
 
-    plt.figure(figsize=(5, 4))
+    plt.figure(figsize=(8, 4))
     sns.scatterplot(x="num_pedestrians_in_frame", y="frame_fps", data=df,
                     alpha=0.5, color=COLORS[1])
     sns.lineplot(x="num_pedestrians_in_frame",
@@ -555,6 +555,7 @@ def plot_latency_and_scalability(df: pd.DataFrame):
     plt.xlabel("Pedestrians in frame")
     plt.ylabel("FPS")
     plt.title("Scalability: FPS vs. Pedestrian Count")
+    plt.grid(False)
     plt.tight_layout()
     plt.savefig(PLOTS_DIR / "plot_fps_vs_peds.png", dpi=300)
     plt.close()
